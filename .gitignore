@@ -1,0 +1,10 @@
+# MATLAB autosave and backup files
+*.asv
+*.m~
+
+# MATLAB figure and data files (usually large, regenerate from scripts)
+*.fig
+*.mat
+
+# macOS
+.DS_Store

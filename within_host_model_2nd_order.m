@@ -1,4 +1,4 @@
-function [B, M, G, A, infection_level] = within_host_model_2nd_order(h, t0, X_max, tau_max, B0, M0, I0, IG0, G0, A0, CC)
+function [B, M, G, A, infection_level] = within_host_model_2nd_order(h, t0, X_max, tau_max, B0, M0, I0, IG0, G0, A0, CC, P_in)
 % WITHIN_HOST_MODEL_2ND_ORDER  Second-order predictor-corrector solver for the
 %   age-structured within-host malaria model.
 %
@@ -28,6 +28,11 @@ function [B, M, G, A, infection_level] = within_host_model_2nd_order(h, t0, X_ma
 %     infection_level   - h * sum_tau I(x,tau), total iRBC density (length nx)
 
 global P
+% When called from parfor, P cannot be shared via global across workers.
+% Pass P as the optional 12th argument; it is set as the worker's global P.
+if nargin >= 12 && ~isempty(P_in)
+    P = P_in;
+end
 
 tau = (0:h:tau_max)';
 ntau = length(tau);

@@ -59,24 +59,21 @@ IG0 = zeros(1, ntau);
 G0  = 0;
 A0  = 0;
 
-% Capture scalar parameters needed inside parfor (avoids global-P access)
+% Capture everything needed inside parfor as local variables.
+% parfor workers do not share global variables; P is passed explicitly
+% as a closure or as the optional 12th argument to the solver.
 sigma_val = P.sigma;
+P_local   = P;        % full struct for passing to within_host_model_2nd_order
 
 %% Pre-allocate result arrays
 cum_inf  = zeros(1, nc);   % fitness f(c)
 duration = zeros(1, nc);   % infection duration (days)
 
-%% Open parallel pool and seed global P on each worker
+%% Open parallel pool if available
 use_parallel = ~isempty(ver('parallel'));   % true if PCT is installed
 if use_parallel
     if isempty(gcp('nocreate'))
         parpool('local');
-    end
-    % Initialise global P on all workers so within_host_model_2nd_order
-    % can access it (global variables are not automatically shared)
-    spmd
-        global P                %#ok<TLEV>
-        baseline_parameter_set;
     end
 end
 
@@ -96,7 +93,7 @@ parfor ii = 1:nc   % degrades gracefully to serial for if PCT absent
     CC   = c_ii * ones(1, nx);
 
     [~, ~, G_ii, ~, ~] = within_host_model_2nd_order( ...
-        h, 0, X_max, tau_max, B0, M0, I0, IG0, G0, A0, CC);
+        h, 0, X_max, tau_max, B0, M0, I0, IG0, G0, A0, CC, P_local);
 
     % Find infection end point
     rec_time = find(G_ii > G_threshold, 1, 'last');

@@ -41,7 +41,7 @@ x     = (0:h:X_max)';
 nx    = length(x);
 
 %% Optimisation configuration
-N_SEEDS     = 60;      % number of random seeds for the coarse phase
+N_SEEDS     = 10;      % number of random seeds for the coarse phase
 N_DIM       = 4;       % spline weight dimension (cubic, no interior knot)
 WEIGHT_RANGE = 1.0;    % seeds drawn from [-WEIGHT_RANGE, WEIGHT_RANGE]^N_DIM
 K_REFINE    = 5;       % number of top seeds passed to the refinement phase
@@ -91,16 +91,15 @@ N_TOTAL   = size(all_seeds, 1);
 %% -----------------------------------------------------------------------
 %% Parallel-pool initialisation
 %% -----------------------------------------------------------------------
+% P is passed explicitly through a closure so that each parfor worker
+% receives a local copy — MATLAB does not share global variables across
+% workers, and spmd does not support global declarations.
+P_local = P;   % capture struct for parfor closure
+
 use_parallel = ~isempty(ver('parallel'));
 if use_parallel
     if isempty(gcp('nocreate'))
         parpool('local');
-    end
-    % Replicate global P to every worker so withinhost_model_optimization
-    % can access it (and baseline_parameter_set is not called per-eval).
-    spmd
-        global P                %#ok<TLEV>
-        baseline_parameter_set;
     end
     n_workers = gcp().NumWorkers;
 else
@@ -119,7 +118,10 @@ coarse_fvals   = zeros(N_TOTAL, 1);
 opts_coarse = optimset('Display','off','MaxIter', MAXITER_COARSE);
 
 parfor i = 1:N_TOTAL
-    [w, fv] = fminsearch(@withinhost_model_optimization, all_seeds(i,:), opts_coarse);
+    % The closure variable P_local is serialised and sent to each worker.
+    % withinhost_model_optimization sets its global P from P_local on entry.
+    [w, fv] = fminsearch(@(w) withinhost_model_optimization(w, P_local), ...
+                         all_seeds(i,:), opts_coarse);
     coarse_weights(i,:) = w;
     coarse_fvals(i)     = fv;
 end
@@ -159,12 +161,14 @@ else
     fprintf('  Optimization Toolbox not found — using fminsearch.\n\n');
 end
 
+obj = @(w) withinhost_model_optimization(w, P_local);   % closure, consistent with Phase 1
+
 for k = 1:K_REFINE
     if use_fmincon
-        [w, fv] = fmincon(@withinhost_model_optimization, top_seeds(k,:), ...
+        [w, fv] = fmincon(obj, top_seeds(k,:), ...
             [], [], [], [], lb, ub, [], opts_refine);
     else
-        [w, fv] = fminsearch(@withinhost_model_optimization, top_seeds(k,:), opts_refine);
+        [w, fv] = fminsearch(obj, top_seeds(k,:), opts_refine);
     end
     refine_weights(k,:) = w;
     refine_fvals(k)     = fv;

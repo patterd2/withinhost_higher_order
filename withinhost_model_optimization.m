@@ -1,4 +1,4 @@
-function b = withinhost_model_optimization(spline_weights)
+function b = withinhost_model_optimization(spline_weights, P_in)
 % WITHINHOST_MODEL_OPTIMIZATION  Objective function for strategy optimization.
 %   Returns the negative cumulative infectiousness (fitness) for a given
 %   set of spline weights defining the investment strategy CC(x).
@@ -15,6 +15,12 @@ function b = withinhost_model_optimization(spline_weights)
 %     The caller is responsible for setting global P before the first call.
 
 global P
+% When called from parfor, global variables are not shared across workers.
+% Pass P as the optional second argument via a closure and it will be set
+% as the worker-local global P before any other code runs.
+if nargin >= 2 && ~isempty(P_in)
+    P = P_in;
+end
 
 %% Persistent cache — built once per session / worker
 persistent H_CACHED                    % step size at last cache build
@@ -30,6 +36,7 @@ h       = 0.125;    % step size in hours (use 0.25 for 2x speedup)
 G_threshold = 1;
 
 deg = length(spline_weights);
+%keyboard;
 
 %% Rebuild grid / IC cache if h has changed (or on first call)
 if isempty(H_CACHED) || H_CACHED ~= h
@@ -68,13 +75,13 @@ end
 %   5 weights → degree-4 (quartic) spline
 if isempty(BASIS) || BASIS_DEG ~= deg
     switch deg
+        case 1,  fname = 'basisMatrixNoKnots_1000_0.125.txt';
         case 2,  fname = 'basisMatrixNoKnots_degree1_1000_0.125.txt';
         case 3,  fname = 'basisMatrixNoKnots_degree2_1000_0.125.txt';
         case 4,  fname = 'basisMatrixNoKnots_1000_0.125.txt';
         case 5,  fname = 'basisMatrixNoKnots_degree4_1000_0.125.txt';
         otherwise
-            error('withinhost_model_optimization: unsupported weight vector length %d ' ...
-                  '(scalar = constant strategy; 2–5 = spline basis).', deg);
+            error('withinhost_model_optimization: unsupported weight vector length %d (scalar = constant strategy; 2–5 = spline basis).', deg);
     end
     tmp       = importdata(fname);
     BASIS     = tmp.data;
@@ -94,8 +101,10 @@ else
 end
 
 %% Run second-order solver (only G is needed for fitness)
+% Pass P explicitly as 12th arg so the call is parfor-safe (the solver
+% uses global P, which may not be set on a fresh worker otherwise).
 [~, ~, G, ~, ~] = within_host_model_2nd_order( ...
-    h, 0, X_max, tau_max, B0, M0, I0, IG0, G0, A0, CC);
+    h, 0, X_max, tau_max, B0, M0, I0, IG0, G0, A0, CC, P);
 
 %% Compute fitness (cumulative infectiousness)
 length_infection = find(G > G_threshold, 1, 'last');

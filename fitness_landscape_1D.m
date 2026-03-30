@@ -1,4 +1,4 @@
-%% 1D_fitness_landscape.m
+%% fitness_landscape_1D.m
 % Compute the fitness landscape f(c) for constant transmission investment
 % strategies c in [0, 0.6] using the second-order within-host solver.
 %
@@ -11,6 +11,10 @@
 %
 % Uses h = 0.125 hr (change to 0.25 for ~2x speedup with similar accuracy).
 % No large I/IG matrices are stored; each solver call uses O(ntau) memory.
+%
+% Parallelisation: uses parfor over the c sweep if a parallel pool is
+% available (Parallel Computing Toolbox).  Falls back silently to serial
+% execution if the toolbox is absent.
 
 tic
 global P
@@ -31,7 +35,7 @@ X_max       = 1000*24;     % max infection age (hr)
 tau_max     = 20*24;       % max age-of-infection tracked (hr)
 G_threshold = 1;           % gametocyte threshold defining end of infection
 
-% c sweep: 61 values from 0.01 to 0.60
+% c sweep: 60 values from 0.01 to 0.60
 % (use 0:0.005:0.6 for finer resolution at ~2x cost)
 c_values = 0.01:0.01:0.6;
 nc       = length(c_values);
@@ -55,51 +59,64 @@ IG0 = zeros(1, ntau);
 G0  = 0;
 A0  = 0;
 
+% Capture scalar parameters needed inside parfor (avoids global-P access)
+sigma_val = P.sigma;
+
 %% Pre-allocate result arrays
 cum_inf  = zeros(1, nc);   % fitness f(c)
 duration = zeros(1, nc);   % infection duration (days)
 
-%% Sweep over c values
+%% Open parallel pool and seed global P on each worker
+use_parallel = ~isempty(ver('parallel'));   % true if PCT is installed
+if use_parallel
+    if isempty(gcp('nocreate'))
+        parpool('local');
+    end
+    % Initialise global P on all workers so within_host_model_2nd_order
+    % can access it (global variables are not automatically shared)
+    spmd
+        global P                %#ok<TLEV>
+        baseline_parameter_set;
+    end
+end
+
 fprintf('Computing fitness landscape: %d values of c in [%.2f, %.2f]\n', ...
     nc, c_values(1), c_values(end));
-fprintf('h = %.4f hr,  X_max = %d days\n\n', h, X_max/24);
+fprintf('h = %.4f hr,  X_max = %d days\n', h, X_max/24);
+if use_parallel
+    fprintf('Running in parallel on %d workers.\n\n', gcp().NumWorkers);
+else
+    fprintf('Parallel Computing Toolbox not found — running serially.\n\n');
+end
 
-for ii = 1:nc
+%% Sweep over c values
+parfor ii = 1:nc   % degrades gracefully to serial for if PCT absent
 
-    P.c = c_values(ii);
-    CC  = P.c * ones(1, nx);
+    c_ii = c_values(ii);
+    CC   = c_ii * ones(1, nx);
 
-    [~, ~, G, ~, ~] = within_host_model_2nd_order( ...
+    [~, ~, G_ii, ~, ~] = within_host_model_2nd_order( ...
         h, 0, X_max, tau_max, B0, M0, I0, IG0, G0, A0, CC);
 
     % Find infection end point
-    rec_time = find(G > G_threshold, 1, 'last');
+    rec_time = find(G_ii > G_threshold, 1, 'last');
     if isempty(rec_time)
         rec_time = 1;
     end
     duration(ii) = x(rec_time) / 24;   % convert hr -> days
 
     % Compute fitness
-    if P.sigma > 0
-        % With adaptive immunity: integrate over actual infection lifespan
-        cum_inf(ii) = simps(x(1:rec_time), betaHV(G(1:rec_time))) / 24;
+    if sigma_val > 0
+        cum_inf(ii) = simps(x(1:rec_time), betaHV(G_ii(1:rec_time))) / 24;
     else
-        % No immunity: fixed-duration integral with exponential recovery discount
-        cum_inf(ii) = simps(x(1:ac), betaHV(G(1:ac)) .* exp(-psi*x(1:ac)/24)) / 24;
+        cum_inf(ii) = simps(x(1:ac), betaHV(G_ii(1:ac)) .* exp(-psi*x(1:ac)/24)) / 24;
     end
 
-    if mod(ii, round(nc/10)) == 0
-        fprintf('  %3.0f%%  c = %.3f  f = %.4f  duration = %.1f days\n', ...
-            100*ii/nc, P.c, cum_inf(ii), duration(ii));
-    end
 end
 
-% Restore baseline c
-baseline_parameter_set;
+fprintf('Done. Total time: %.1f s\n', toc);
 
-fprintf('\nDone. Total time: %.1f s\n', toc);
-
-%% Identify optimal strategy
+%% Identify optimal constant strategy
 [f_max, idx_opt] = max(cum_inf);
 c_opt = c_values(idx_opt);
 fprintf('Optimal constant strategy:  c* = %.4f (%.2f%%)  ->  f = %.5f\n', ...

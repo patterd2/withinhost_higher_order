@@ -35,11 +35,13 @@ x = (t0:h:X_max)';
 nx = length(x);
 
 %% Allocate output arrays
-B = NaN(nx,1);
-M = NaN(nx,1);
-G = NaN(nx,1);
-A = NaN(nx,1);
-infection_level = NaN(nx,1);
+% Initialise with zeros: entries beyond the early-exit point remain zero,
+% which is biologically correct (infection has ended).
+B = zeros(nx,1);
+M = zeros(nx,1);
+G = zeros(nx,1);
+A = zeros(nx,1);
+infection_level = zeros(nx,1);
 
 %% Assign initial conditions
 B(1) = B0;
@@ -63,6 +65,14 @@ GammaG1 = gamma_G(tau, h)';             % 1 x ntau
 
 % GammaG2(j): gametocyte maturation hazard at age tau(j+1)
 GammaG2 = gamma_G(tau(2:end)', h);      % 1 x (ntau-1)
+
+%% Early-exit parameters
+% Once G has peaked and dropped back below G_stop, the infection is
+% effectively over and all further fitness contributions are negligible.
+% Remaining output entries stay zero (set by initialisation above).
+G_stop   = 0.01;            % exit threshold for G
+n_warmup = floor(10*24/h);  % don't exit before day 10 (G still rising)
+G_peaked = false;           % becomes true once G first exceeds G_stop
 
 %% Main time-stepping loop
 for n = 1:nx-1
@@ -159,6 +169,18 @@ for n = 1:nx-1
     % dA/dx = phi(sumI) - muA*A  (muA = 0 in baseline, so pure integration)
     % => A[n+1]*(1/h + muA) = A[n]/h + (phi_n + phi_p)/2
     A(n+1) = (A(n)/h + (phi(sumI_n, P.IT, P.s) + phi(sumI_p, P.IT, P.s))/2) / (1/h + P.muA);
+
+    % ------------------------------------------------------------------
+    % Early exit: stop once G has peaked and dropped back below G_stop.
+    % The flag G_peaked prevents an exit during the initial build-up phase
+    % when G is still rising from zero.
+    % ------------------------------------------------------------------
+    if G(n+1) >= G_stop
+        G_peaked = true;
+    end
+    if G_peaked && G(n+1) < G_stop && n >= n_warmup
+        break;
+    end
 
     % ------------------------------------------------------------------
     % Advance rolling window

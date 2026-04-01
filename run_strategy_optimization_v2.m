@@ -8,17 +8,14 @@
 %      time scales with 1/num_workers.
 %   3. Latin Hypercube initial seeds  — better space-filling than pure
 %      random (requires Statistics & ML Toolbox; falls back to rand).
-%   4. Warm-start seed               — the best constant strategy c* is
-%      projected onto the spline basis and added as the first seed, giving
-%      the optimiser a head-start near the known good region.
-%   5. Two-phase optimisation         — coarse parallel sweep (MaxIter=80)
+%   4. Two-phase optimisation         — coarse parallel sweep (MaxIter=80)
 %      identifies the best seeds cheaply; a refined serial pass
 %      (fmincon if available, else fminsearch with tighter tolerances)
 %      polishes the top-K survivors to high accuracy.
 %
 % NB: baseline_parameter_set must NOT be called inside
-%     withinhost_model_optimization — it is called once here and then
-%     replicated to workers via spmd.
+%     withinhost_model_optimization — it is called once here and
+%     replicated to workers via the P_local closure variable.
 
 tic
 
@@ -41,10 +38,10 @@ x     = (0:h:X_max)';
 nx    = length(x);
 
 %% Optimisation configuration
-N_SEEDS     = 10;      % number of random seeds for the coarse phase
-N_DIM       = 4;       % spline weight dimension (cubic, no interior knot)
+N_SEEDS      = 60;     % number of random seeds for the coarse phase
+N_DIM        = 4;      % spline weight dimension (cubic, no interior knot)
 WEIGHT_RANGE = 1.0;    % seeds drawn from [-WEIGHT_RANGE, WEIGHT_RANGE]^N_DIM
-K_REFINE    = 5;       % number of top seeds passed to the refinement phase
+K_REFINE     = 5;      % number of top seeds passed to the refinement phase
 MAXITER_COARSE  = 80;  % fminsearch iterations in the coarse phase
 MAXITER_REFINE  = 500; % iterations in the refinement phase
 
@@ -53,40 +50,18 @@ lb = -5 * ones(1, N_DIM);
 ub =  5 * ones(1, N_DIM);
 
 %% -----------------------------------------------------------------------
-%% PHASE 0 — Warm-start: find best constant strategy via coarse 1D sweep
-%% -----------------------------------------------------------------------
-fprintf('=== Phase 0: Warm-start from constant-strategy sweep ===\n');
-
-c_coarse = linspace(0.01, 0.60, 15);    % 15-point coarse sweep
-f_coarse = zeros(1, length(c_coarse));
-for ii = 1:length(c_coarse)
-    f_coarse(ii) = -withinhost_model_optimization(c_coarse(ii));
-end
-[~, ci] = max(f_coarse);
-c_star   = c_coarse(ci);
-fprintf('  Best constant c* = %.4f  (f = %.5f)\n\n', c_star, f_coarse(ci));
-
-% Project constant strategy onto the cubic basis by least-squares
-% so the warm-start seed represents CC(x) ≈ c_star everywhere.
-basis_data = importdata('basisMatrixNoKnots_1000_0.125.txt');
-B_matrix   = basis_data.data;                   % nx × N_DIM
-warm_seed  = B_matrix \ (c_star * ones(nx, 1)); % least-squares fit
-warm_seed  = warm_seed';                        % 1 × N_DIM row vector
-
-%% -----------------------------------------------------------------------
-%% Build initial seed matrix  [N_SEEDS+1 × N_DIM]
+%% Build initial seed matrix  [N_SEEDS × N_DIM]
 %% -----------------------------------------------------------------------
 if exist('lhsdesign', 'file') == 2
     % Latin Hypercube Sampling (Statistics & ML Toolbox)
-    raw_seeds = lhsdesign(N_SEEDS, N_DIM);              % in [0,1]^N_DIM
-    rand_seeds = WEIGHT_RANGE * (2*raw_seeds - 1);      % rescale to [-W, W]
+    raw_seeds  = lhsdesign(N_SEEDS, N_DIM);         % in [0,1]^N_DIM
+    all_seeds  = WEIGHT_RANGE * (2*raw_seeds - 1);  % rescale to [-W, W]
 else
     % Fallback to plain random
-    rand_seeds = WEIGHT_RANGE * (rand(N_SEEDS, N_DIM) - 0.5);
+    all_seeds  = WEIGHT_RANGE * (rand(N_SEEDS, N_DIM) - 0.5);
 end
 
-all_seeds = [warm_seed; rand_seeds];    % warm-start seed is index 1
-N_TOTAL   = size(all_seeds, 1);
+N_TOTAL = size(all_seeds, 1);
 
 %% -----------------------------------------------------------------------
 %% Parallel-pool initialisation
@@ -195,13 +170,15 @@ fprintf('Total elapsed time: %.1f s  (%.1f min)\n\n', elapsed, elapsed/60);
 save('optimization_results.mat', ...
     'best_weights', 'best_fitness', ...
     'refine_weights', 'refine_fvals', ...
-    'coarse_weights', 'coarse_fvals', ...
-    'c_star', 'warm_seed');
+    'coarse_weights', 'coarse_fvals');
 fprintf('Results saved to optimization_results.mat\n');
 
 %% -----------------------------------------------------------------------
 %% Reconstruct and plot the optimal strategy
 %% -----------------------------------------------------------------------
+basis_data = importdata('basisMatrixNoKnots_1000_0.125.txt');
+B_matrix   = basis_data.data;   % nx × N_DIM
+
 CC_opt = zeros(nx, 1);
 for k = 1:N_DIM
     CC_opt = CC_opt + best_weights(k) * B_matrix(:, k);
@@ -210,10 +187,7 @@ CC_opt = min(1, max(0, CC_opt));
 
 figure(1);
 clf;
-hold on;
 plot(x/24, 100*CC_opt, 'Color', [0 0.45 0.70], 'LineWidth', 3);
-yline(100*c_star, '--k', sprintf('c* = %.1f%%', 100*c_star), ...
-    'LabelHorizontalAlignment','left', 'LineWidth', 1.5);
 ylim([0 50]);
 xlim([0 600]);
 xlabel('infection age x (days)');
